@@ -1,13 +1,12 @@
+from typing import Any
 import logging
 import os
 import sys
 import time
-from datetime import datetime
-from typing import Any
 
+from telegram import Bot
 from dotenv import load_dotenv
 from requests import RequestException
-from telegram import Bot
 from telegram.error import Unauthorized
 import requests
 
@@ -54,18 +53,6 @@ def is_empty_or_none(env_value: Any) -> bool:
     return env_value == '' or env_value is None
 
 
-def convert_to_datetime(date: str) -> datetime:
-    return datetime.strptime(date, consts.DATE_FORMAT)
-
-
-def convert_to_unix_time(date: datetime) -> int:
-    return int(
-        time.mktime(
-            date.timetuple()
-        )
-    )
-
-
 def check_tokens() -> None:
     """
     Функция проверяет переменные окружения токенов,
@@ -88,14 +75,10 @@ def send_message(bot: Bot, msg: str):
     """
     try:
         bot.send_message(TELEGRAM_CHAT_ID, msg)
-        logger.debug(
-            consts.SENT_SUCCESSFULLY.format(message=msg)
-        )
+        logger.debug(f'Сообщение: {msg} - отправлено')
     except Exception as error:
         logger.error(error, exc_info=True)
-        raise SendMessageError(
-            consts.SEND_MESSAGE_ERROR_TEXT.format(error=error)
-        )
+        raise SendMessageError(str(error))
 
 
 def check_response(response: dict):
@@ -106,18 +89,21 @@ def check_response(response: dict):
         )
 
     if (
-        consts.HOMEWORKS_API_KEY not in response
+        consts.HOMEWORKS_KEY not in response
     ):
         raise ApiKeysError(
-            consts.MISSING_API_KEY.format(
-                key_name=consts.HOMEWORKS_API_KEY
-            )
+            f'{consts.MISSING_API_KEY.format(key_name=consts.HOMEWORKS_KEY)}: '
+            f'{response}'
         )
-    if type(response.get(consts.HOMEWORKS_API_KEY)) != list:
+
+    if type(response.get(consts.HOMEWORKS_KEY)) != list:
         raise TypeError(
-            consts.VALUE_NOT_LIST_ERROR_TEXT.format(
-                key_name=consts.HOMEWORKS_API_KEY
-            )
+            consts.VALUE_NOT_LIST_ERROR_TEXT
+        )
+
+    if len(response.get(consts.HOMEWORKS_KEY)) == 0:
+        raise EmptyHomeworksListException(
+            consts.NO_NEW_STATUS_EXC
         )
 
 
@@ -134,6 +120,7 @@ def get_api_answer(timestamp: int) -> dict:
         )
     except requests.RequestException as error:
         raise EndpointError(error)
+
     if response.status_code == 401:
         raise NotAuthenticatedError(
             response.json().get('message')
@@ -167,24 +154,16 @@ def parse_status(homework: dict) -> str:
     homework_name: str = homework[consts.HOMEWORK_NAME_KEY]
     if homework.get(consts.HOMEWORK_STATUS_KEY) not in HOMEWORK_VERDICTS:
         raise KeyError(
-            f'Неожиданный статус домашней работы.'
+            f'Неожиданный статус домашней работы: '
+            f'{homework.get(consts.HOMEWORK_STATUS_KEY)}'
         )
     verdict: str = HOMEWORK_VERDICTS.get(
         homework[consts.HOMEWORK_STATUS_KEY]
     )
     return consts.STATUS_TEXT.format(
-        homework_name=homework_name, verdict=verdict
+        homework_name=homework_name,
+        verdict=verdict
     )
-
-
-def if_approved(homework: dict, dates: list) -> None:
-    date: datetime = convert_to_datetime(homework.get('date_updated'))
-    if (
-        homework.get('status') == 'approved'
-        and date > max(dates)
-    ):
-        dates.clear()
-        dates.append(date)
 
 
 def get_from_date(dates: list) -> int:
@@ -206,32 +185,15 @@ def main() -> None:
         except Unauthorized as error:
             logger.critical(error, exc_info=True)
         else:
-            logger.debug('Бот готов к работе.')
             while True:
-                timestamp: int = get_from_date(homeworks_dates)
-                logger.debug('Запуск цикла.')
-                logger.debug(f'Состояние timestamp: {timestamp}')
-                logger.debug(f'Состояние списка дат: {homeworks_dates}')
                 try:
+                    timestamp: int = get_from_date(homeworks_dates)
                     api_data: dict = get_api_answer(timestamp)
-                    logger.debug(f'Ответ API получен успешно: {api_data}')
-
                     check_response(api_data)
-                    logger.debug('Проверка ответа прошла успешно.')
-
-                    if len(api_data.get(consts.HOMEWORKS_API_KEY)) == 0:
-                        raise EmptyHomeworksListException(
-                            consts.NO_NEW_STATUS
-                        )
-                    else:
-                        homeworks_dates.append(api_data['current_date'])
-
-                    homework: dict = api_data.get(consts.HOMEWORKS_API_KEY)[0]
-                    logger.debug(f'Домашняя работа: {homework}')
-                    logger.debug(f'Состояние списка дат: {homeworks_dates}')
+                    homeworks_dates.append(api_data[consts.CURRENT_DATE_KEY])
+                    homework: dict = api_data.get(consts.HOMEWORKS_KEY)[0]
                     message = parse_status(homework)
                     send_message(bot, message)
-                    if_approved(homework, homeworks_dates)
                 except NotAuthenticatedError as error:
                     logger.error(error)
                 except FromDateFormatError as error:
@@ -255,7 +217,6 @@ def main() -> None:
                 except Exception as error:
                     logger.error(error, exc_info=True)
                 finally:
-                    logger.debug('КОНЕЦ ЦИКЛА!')
                     time.sleep(RETRY_PERIOD)
 
 
@@ -267,4 +228,4 @@ if __name__ == '__main__':
     except SystemExit as err:
         logger.critical(err, exc_info=True)
     except Exception as err:
-        logger.error(err, exc_info=True)
+        logger.critical(err, exc_info=True)

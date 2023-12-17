@@ -1,7 +1,3 @@
-class EnvTokenError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
 
 class NotAuthenticatedError(Exception):
     def __init__(self, message):
@@ -23,17 +19,7 @@ class EndpointError(Exception):
         super().__init__(message)
 
 
-class TgIdError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
-
 class SendMessageError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
-
-class ApiTypeError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
