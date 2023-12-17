@@ -5,6 +5,7 @@ HOMEWORKS_KEY = 'homeworks'
 CURRENT_DATE_KEY = 'current_date'
 HOMEWORK_NAME_KEY = 'homework_name'
 HOMEWORK_STATUS_KEY = 'status'
+DATE_UPDATED_KEY = 'date_updated'
 
 STATUS_TEXT = 'Изменился статус проверки работы "{homework_name}". {verdict}'
 

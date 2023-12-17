@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 import logging
 import os
@@ -46,6 +47,14 @@ formatter = logging.Formatter(
 handler = logging.StreamHandler(stream=sys.stdout)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
+
+def convert_to_datetime(date: str) -> datetime:
+    """
+    Принимает строковое значение даты их ответа API
+    и возвращает дату в формате datetime.
+    """
+    return datetime.strptime(date, consts.DATE_FORMAT)
 
 
 def is_empty_or_none(env_value: Any) -> bool:
@@ -162,6 +171,26 @@ def parse_status(homework: dict) -> str:
         homework_name=homework_name,
         verdict=verdict
     )
+
+
+def get_homework_with_max_date(homeworks: list) -> dict:
+    """
+    Функцию не пропускают тесты.
+    Идея в том, функция сверялась бы с внешним списком дат,
+    которые копятся, пока не прошел ревью со статусом approved.
+    Если максимальная дата уже есть в списке, то сообщение не отправляется,
+    а в логгер пишется типа: "Нет нового статуса".
+    Если внешний список дат пуст, то добавить туда максимальную дату
+    и вернуть словарь homework, или если максимальная дата больше
+    максимальной даты из внешнего списка тоже возвращаем hw - статус новый ведь.
+    """
+    dates: list[datetime] = [
+        convert_to_datetime(hw[consts.DATE_UPDATED_KEY])
+        for hw in homeworks
+    ]
+    for hw in homeworks:
+        if convert_to_datetime(hw[consts.DATE_UPDATED_KEY]) == max(dates):
+            return hw
 
 
 def get_from_date(dates: list) -> int:
