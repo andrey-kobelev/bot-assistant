@@ -27,13 +27,3 @@ class SendMessageError(Exception):
 class ApiKeysError(KeyError):
     def __init__(self, message):
         super().__init__(message)
-
-
-class NoNewStatus(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
-
-class InvalidStatusError(Exception):
-    def __init__(self, message):
-        super().__init__(message)

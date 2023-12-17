@@ -18,9 +18,7 @@ from exception import (
     EndpointError,
     SendMessageError,
     ApiKeysError,
-    NoNewStatus,
     EmptyHomeworksListException,
-    InvalidStatusError
 )
 
 load_dotenv()
@@ -51,8 +49,8 @@ logger.addHandler(handler)
 
 def convert_to_datetime(date: str) -> datetime:
     """
-    Принимает строковое значение даты их ответа API
-    и возвращает дату в формате datetime.
+    Принимает строковое значение даты из ответа API.
+    Возвращает дату в формате datetime.
     """
     return datetime.strptime(date, consts.DATE_FORMAT)
 
@@ -63,9 +61,7 @@ def is_empty_or_none(env_value: Any) -> bool:
 
 
 def check_tokens() -> None:
-    """
-    Проверяет переменные окружения.
-    """
+    """Проверяет переменные окружения."""
     if (
         is_empty_or_none(PRACTICUM_TOKEN)
         or is_empty_or_none(TELEGRAM_TOKEN)
@@ -77,9 +73,7 @@ def check_tokens() -> None:
 
 
 def send_message(bot: Bot, msg: str):
-    """
-    Для отправки сообщения в телеграм.
-    """
+    """Для отправки сообщения в телеграм."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, msg)
         logger.debug(f'Сообщение: {msg} - отправлено')
@@ -148,10 +142,7 @@ def get_api_answer(timestamp: int) -> dict:
 
 
 def parse_status(homework: dict) -> str:
-    """
-    Извлекает из информации конкретной
-    домашней работы статус.
-    """
+    """Извлекает из информации конкретной домашней работы статус."""
     if consts.HOMEWORK_NAME_KEY not in homework:
         raise KeyError(
             consts.MISSING_API_KEY.format(
@@ -182,7 +173,8 @@ def get_homework_with_max_date(homeworks: list) -> dict:
     а в логгер пишется типа: "Нет нового статуса".
     Если внешний список дат пуст, то добавить туда максимальную дату
     и вернуть словарь homework, или если максимальная дата больше
-    максимальной даты из внешнего списка тоже возвращаем hw - статус новый ведь.
+    максимальной даты из внешнего списка тоже
+    возвращаем hw - статус новый ведь.
     """
     dates: list[datetime] = [
         convert_to_datetime(hw[consts.DATE_UPDATED_KEY])
@@ -205,47 +197,31 @@ def main() -> None:
     try:
         homeworks_dates: list = []
         check_tokens()
+        bot = Bot(token=TELEGRAM_TOKEN)
+    except Unauthorized as error:
+        logger.critical(error, exc_info=True)
     except Exception as error:
         logger.critical(error, exc_info=True)
     else:
-        try:
-            bot = Bot(token=TELEGRAM_TOKEN)
-        except Unauthorized as error:
-            logger.critical(error, exc_info=True)
-        else:
-            while True:
-                try:
-                    timestamp: int = get_from_date(homeworks_dates)
-                    api_data: dict = get_api_answer(timestamp)
-                    check_response(api_data)
-                    homeworks_dates.append(api_data[consts.CURRENT_DATE_KEY])
-                    homework: dict = api_data.get(consts.HOMEWORKS_KEY)[0]
-                    message = parse_status(homework)
-                    send_message(bot, message)
-                except NotAuthenticatedError as error:
-                    logger.error(error)
-                except FromDateFormatError as error:
-                    logger.error(error)
-                except EndpointError as error:
-                    logger.error(error)
-                except TypeError as error:
-                    logger.error(error, exc_info=True)
-                except ApiKeysError as error:
-                    logger.error(error, exc_info=True)
-                except EmptyHomeworksListException as error:
-                    logger.debug(error)
-                except InvalidStatusError as error:
-                    logger.error(error, exc_info=True)
-                except SendMessageError as error:
-                    logger.error(error, exc_info=True)
-                except RequestException as error:
-                    logger.error(error)
-                except NoNewStatus as error:
-                    logger.debug(error)
-                except Exception as error:
-                    logger.error(error, exc_info=True)
-                finally:
-                    time.sleep(RETRY_PERIOD)
+        while True:
+            try:
+                timestamp: int = get_from_date(homeworks_dates)
+                api_data: dict = get_api_answer(timestamp)
+                check_response(api_data)
+                homeworks_dates.append(api_data[consts.CURRENT_DATE_KEY])
+                homework: dict = api_data.get(consts.HOMEWORKS_KEY)[0]
+                message = parse_status(homework)
+                send_message(bot, message)
+            except RequestException as error:
+                logger.error(error)
+            except KeyError as error:
+                logger.error(error, exc_info=True)
+            except TypeError as error:
+                logger.error(error, exc_info=True)
+            except Exception as error:
+                logger.error(error, exc_info=True)
+            finally:
+                time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
