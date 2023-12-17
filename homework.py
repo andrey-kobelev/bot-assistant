@@ -49,15 +49,13 @@ logger.addHandler(handler)
 
 
 def is_empty_or_none(env_value: Any) -> bool:
-    """Вспомогательная функция проверяющая переменные окружения."""
+    """Вспомогательная функция проверяющая переменную окружения."""
     return env_value == '' or env_value is None
 
 
 def check_tokens() -> None:
     """
-    Функция проверяет переменные окружения токенов,
-    и в случае ошибки выбрасывает специальное исключение:
-    EnvTokenError.
+    Проверяет переменные окружения.
     """
     if (
         is_empty_or_none(PRACTICUM_TOKEN)
@@ -71,7 +69,7 @@ def check_tokens() -> None:
 
 def send_message(bot: Bot, msg: str):
     """
-    Функция отправляет сообщение в чат телеграм.
+    Для отправки сообщения в телеграм.
     """
     try:
         bot.send_message(TELEGRAM_CHAT_ID, msg)
@@ -82,7 +80,7 @@ def send_message(bot: Bot, msg: str):
 
 
 def check_response(response: dict):
-    """Проверяет ключи и тип данных ответа API."""
+    """Проверяет ответ API на соответствие с документацией."""
     if type(response) is not dict:
         raise TypeError(
             consts.API_TYPE_ERROR_TEXT.format(response=response)
@@ -109,7 +107,7 @@ def check_response(response: dict):
 
 def get_api_answer(timestamp: int) -> dict:
     """
-    Функция отправляет запрос к API.
+    Отправляет запрос к API.
     Возвращает ответ API.
     """
     try:
@@ -142,8 +140,8 @@ def get_api_answer(timestamp: int) -> dict:
 
 def parse_status(homework: dict) -> str:
     """
-    Извлекает из информации о конкретной
-    домашней работе статус этой работы.
+    Извлекает из информации конкретной
+    домашней работы статус.
     """
     if consts.HOMEWORK_NAME_KEY not in homework:
         raise KeyError(
@@ -167,6 +165,7 @@ def parse_status(homework: dict) -> str:
 
 
 def get_from_date(dates: list) -> int:
+    """Получить from_date для запроса к API."""
     if len(dates) > 0:
         return max(dates)
     return consts.START_UNIX_TIME
