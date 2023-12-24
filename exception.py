@@ -4,26 +4,16 @@ class NotAuthenticatedError(Exception):
         super().__init__(message)
 
 
-class FromDateFormatError(Exception):
+class APIAnswerError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
 
-class EmptyHomeworksListException(Exception):
+class UnknownAPIAnswerError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
 
-class EndpointError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
-
-class SendMessageError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
-
-
-class ApiKeysError(KeyError):
+class StatusError(ValueError):
     def __init__(self, message):
         super().__init__(message)

@@ -1,24 +1,19 @@
-from datetime import datetime
-from typing import Any
 import logging
 import os
 import sys
 import time
+from datetime import datetime
+from datetime import timedelta
 
 from telegram import Bot
 from dotenv import load_dotenv
-from requests import RequestException
-from telegram.error import Unauthorized
 import requests
 
-import constants as consts
 from exception import (
     NotAuthenticatedError,
-    FromDateFormatError,
-    EndpointError,
-    SendMessageError,
-    ApiKeysError,
-    EmptyHomeworksListException,
+    APIAnswerError,
+    StatusError,
+    UnknownAPIAnswerError
 )
 
 load_dotenv()
@@ -36,75 +31,107 @@ HOMEWORK_VERDICTS: dict[str, str] = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
+STATUS_TEXT = (
+    'Изменился статус проверки '
+    'работы "{homework_name}". {verdict}'
+)
+SENT_SUCCESSFULLY = 'Сообщение: "{message}" - отправлено успешно.'
+MISSING_KEYS_API = 'В ответе API отсутствует ожидаемый ключ. {key_err}'
+DATE_FORMAT = '%Y-%m-%dT%XZ'
+ENDPOINT_ERROR_TEXT = 'Endpoint error! API status code: {status_code}'
+ENV_VARIABLE_ERROR_TEXT = 'Ошибка переменной окружения: {env_value}'
+TG_ID_ERROR_TEXT = 'Ошибка id чата телеграмм.'
+SEND_MESSAGE_ERROR_TEXT = ('Ошибка при отправке сообщения: '
+                           '{message}. Детали: {details}')
+API_TYPE_ERROR_TEXT = 'Некорректный тип ответа API: {response}'
+NO_NEW_STATUS_EXC = 'Статус не изменился'
+VALUE_NOT_LIST_ERROR_TEXT = (
+    'Значение ключа "{key_name}" '
+    'не является списком. Тип ответа API: {response_type}'
+)
+MISSING_API_KEY = 'Отсутствует ключ "{key_name}" в ответе API.'
+REQUESTS_ERROR_TEXT = (
+    'Ошибка сети при отправке GET-запроса!'
+    '\nПараметры запроса:'
+    '\nEndpoint={endpoint};'
+    'Headers={headers};'
+    'Params={params}.\n'
+    '\nДелали ошибки: {error}'
+)
+
+NOT_CORRECT_STATUS = 'Неожиданный статус домашней работы: {status}'
+
+FORMATTER = ('%(asctime)s - %(funcName)s - '
+             '%(name)s - %(levelname)s - %(message)s')
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-formatter = logging.Formatter(
-    consts.FORMATTER
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format=FORMATTER,
+    stream=sys.stdout
 )
-handler = logging.StreamHandler(stream=sys.stdout)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
-
-def convert_to_datetime(date: str) -> datetime:
-    """
-    Принимает строковое значение даты из ответа API.
-    Возвращает дату в формате datetime.
-    """
-    return datetime.strptime(date, consts.DATE_FORMAT)
-
-
-def is_empty_or_none(env_value: Any) -> bool:
-    """Вспомогательная функция проверяющая переменную окружения."""
-    return env_value == '' or env_value is None
 
 
 def check_tokens() -> None:
     """Проверяет переменные окружения."""
-    if (
-        is_empty_or_none(PRACTICUM_TOKEN)
-        or is_empty_or_none(TELEGRAM_TOKEN)
-    ):
-        raise Exception(consts.ENV_TOKEN_ERROR_TEXT)
+    tokens = [
+        TELEGRAM_TOKEN,
+        PRACTICUM_TOKEN,
+        TELEGRAM_CHAT_ID
+    ]
+    try:
+        for token in tokens:
+            if token == '' or token is None:
+                raise ValueError(
+                    ENV_VARIABLE_ERROR_TEXT.format(
+                        env_value=token
+                    )
+                )
+    except ValueError as error:
+        logger.critical(
+            f'Ошибка переменной окружения: {error}',
+            exc_info=True
+        )
+        raise
 
-    if is_empty_or_none(TELEGRAM_CHAT_ID):
-        raise Exception(consts.TG_ID_ERROR_TEXT)
 
-
-def send_message(bot: Bot, msg: str):
+def send_message(bot: Bot, message: str) -> None:
     """Для отправки сообщения в телеграм."""
     try:
-        bot.send_message(TELEGRAM_CHAT_ID, msg)
-        logger.debug(f'Сообщение: {msg} - отправлено')
+        bot.send_message(TELEGRAM_CHAT_ID, message)
+        logger.debug(SENT_SUCCESSFULLY.format(message=message))
     except Exception as error:
-        logger.error(error, exc_info=True)
-        raise SendMessageError(str(error))
+        logger.error(
+            SEND_MESSAGE_ERROR_TEXT.format(message=message, details=error),
+            exc_info=True
+        )
 
 
-def check_response(response: dict):
+def check_response(response: dict) -> None:
     """Проверяет ответ API на соответствие с документацией."""
-    if type(response) is not dict:
-        raise TypeError(
-            consts.API_TYPE_ERROR_TEXT.format(response=response)
-        )
-
-    if (
-        consts.HOMEWORKS_KEY not in response
+    if not (
+        isinstance(response, dict)
+        or issubclass(type(response), dict)
     ):
-        raise ApiKeysError(
-            f'{consts.MISSING_API_KEY.format(key_name=consts.HOMEWORKS_KEY)}: '
-            f'{response}'
-        )
-
-    if type(response.get(consts.HOMEWORKS_KEY)) != list:
         raise TypeError(
-            consts.VALUE_NOT_LIST_ERROR_TEXT
+            API_TYPE_ERROR_TEXT.format(response=type(response))
         )
 
-    if len(response.get(consts.HOMEWORKS_KEY)) == 0:
-        raise EmptyHomeworksListException(
-            consts.NO_NEW_STATUS_EXC
+    if 'homeworks' not in response:
+        raise KeyError(
+            MISSING_API_KEY.format(key_name="homeworks")
+        )
+
+    if not (
+        isinstance(response.get('homeworks'), list)
+        or issubclass(type(response.get('homeworks')), list)
+    ):
+        raise TypeError(
+            VALUE_NOT_LIST_ERROR_TEXT.format(
+                key_name='homeworks',
+                response_type=type(response.get('homeworks'))
+            )
         )
 
 
@@ -119,117 +146,150 @@ def get_api_answer(timestamp: int) -> dict:
             headers=HEADERS,
             params={'from_date': timestamp}
         )
-    except requests.RequestException as error:
-        raise EndpointError(error)
-
-    if response.status_code == 401:
-        raise NotAuthenticatedError(
-            response.json().get('message')
-        )
-
-    if response.status_code == 400:
-        raise FromDateFormatError(
-            response.json().get('error').get('error')
-        )
-
-    if response.status_code != 200:
-        raise EndpointError(
-            consts.ENDPOINT_ERROR_TEXT.format(
-                status_code=response.status_code
+        data_from_api = response.json()
+    except Exception as error:
+        raise ConnectionError(
+            REQUESTS_ERROR_TEXT.format(
+                endpoint=ENDPOINT,
+                headers=HEADERS,
+                params=timestamp,
+                error=error
             )
         )
-    return response.json()
+    else:
+        if 'error' in data_from_api:
+            raise APIAnswerError(
+                f'Error: {data_from_api.get("error").get("error")}\n'
+                f'Code: {data_from_api.get("cose")}'
+            )
+
+        if (
+            'error' not in data_from_api
+            and 'code' in data_from_api
+        ):
+            raise NotAuthenticatedError(
+                f'Code: {data_from_api.get("code")}\n'
+                f'Message: {data_from_api.get("message")}'
+            )
+
+        if response.status_code != 200:
+            raise UnknownAPIAnswerError(
+                f'Неизвестная ошибка ответа API. Code: {response.status_code}'
+            )
+
+    check_response(data_from_api)
+
+    return data_from_api
 
 
 def parse_status(homework: dict) -> str:
     """Извлекает из информации конкретной домашней работы статус."""
-    if consts.HOMEWORK_NAME_KEY not in homework:
+    homework_keys = (
+        'homework_name',
+        'status',
+    )
+
+    for key in homework_keys:
+        if key not in homework:
+            raise KeyError(
+                MISSING_API_KEY.format(
+                    key_name=key
+                )
+            )
+
+    if homework.get('status') not in HOMEWORK_VERDICTS:
+        raise StatusError(
+            NOT_CORRECT_STATUS.format(status=homework.get("status"))
+        )
+
+    return STATUS_TEXT.format(
+        homework_name=homework['homework_name'],
+        verdict=HOMEWORK_VERDICTS.get(
+            homework['status']
+        )
+    )
+
+
+def get_from_date(api_answer: dict) -> int:
+    """Обновляет отсечку времени по присланным данным из API."""
+    if 'current_date' not in api_answer:
         raise KeyError(
-            consts.MISSING_API_KEY.format(
-                key_name=consts.HOMEWORK_NAME_KEY
+            MISSING_API_KEY.format(
+                key_name='current_date'
             )
         )
-    homework_name: str = homework[consts.HOMEWORK_NAME_KEY]
-    if homework.get(consts.HOMEWORK_STATUS_KEY) not in HOMEWORK_VERDICTS:
-        raise KeyError(
-            f'Неожиданный статус домашней работы: '
-            f'{homework.get(consts.HOMEWORK_STATUS_KEY)}'
-        )
-    verdict: str = HOMEWORK_VERDICTS.get(
-        homework[consts.HOMEWORK_STATUS_KEY]
-    )
-    return consts.STATUS_TEXT.format(
-        homework_name=homework_name,
-        verdict=verdict
-    )
+    return int(api_answer.get('current_date'))
 
 
-def get_homework_with_max_date(homeworks: list) -> dict:
-    """
-    Функцию не пропускают тесты.
-    Идея в том, функция сверялась бы с внешним списком дат,
-    которые копятся, пока не прошел ревью со статусом approved.
-    Если максимальная дата уже есть в списке, то сообщение не отправляется,
-    а в логгер пишется типа: "Нет нового статуса".
-    Если внешний список дат пуст, то добавить туда максимальную дату
-    и вернуть словарь homework, или если максимальная дата больше
-    максимальной даты из внешнего списка тоже
-    возвращаем hw - статус новый ведь.
-    """
-    dates: list[datetime] = [
-        convert_to_datetime(hw[consts.DATE_UPDATED_KEY])
-        for hw in homeworks
-    ]
-    for hw in homeworks:
-        if convert_to_datetime(hw[consts.DATE_UPDATED_KEY]) == max(dates):
-            return hw
+def send_error_message(bot: Bot, message: str, messages: list):
+    """Отправляет в телеграм сообщение ошибки."""
+    if message not in messages:
+        send_message(bot, message)
+        messages.append(message)
 
 
-def get_from_date(dates: list) -> int:
-    """Получить from_date для запроса к API."""
-    if len(dates) > 0:
-        return max(dates)
-    return consts.START_UNIX_TIME
+def logic_for_while_loop(timestamp: int, bot: Bot, messages: list):
+    """Логика для цикла while функции main()."""
+    try:
+        api_answer = get_api_answer(timestamp)
+        homework = api_answer.get('homeworks')
+
+        if len(homework) > 0:
+            send_message(bot, parse_status(homework[0]))
+        else:
+            logger.debug(f'В ответе отсутствует новый статус: {homework}')
+
+    except APIAnswerError as error:
+        message = f'Ошибка ответа API: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except UnknownAPIAnswerError as error:
+        message = f' Неизвестная ошибка ответа API: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except NotAuthenticatedError as error:
+        message = f'Проверьте токен API: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except StatusError as error:
+        message = f'Неожиданный статус домашней работы: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except TypeError as error:
+        message = f'Неожиданный тип ответа API: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except KeyError as error:
+        message = f'Отсутствует ожидаемый ключ в ответе API: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    except Exception as error:
+        message = f'Неизвестная ошибка: {error}'
+        logger.error(message, exc_info=True)
+        send_error_message(bot, message, messages)
+    else:
+        return get_from_date(api_answer)
 
 
 def main() -> None:
     """Основная логика работы бота."""
-    try:
-        homeworks_dates: list = []
-        check_tokens()
-        bot = Bot(token=TELEGRAM_TOKEN)
-    except Unauthorized as error:
-        logger.critical(error, exc_info=True)
-    except Exception as error:
-        logger.critical(error, exc_info=True)
-    else:
-        while True:
-            try:
-                timestamp: int = get_from_date(homeworks_dates)
-                api_data: dict = get_api_answer(timestamp)
-                check_response(api_data)
-                homeworks_dates.append(api_data[consts.CURRENT_DATE_KEY])
-                homework: dict = api_data.get(consts.HOMEWORKS_KEY)[0]
-                message = parse_status(homework)
-                send_message(bot, message)
-            except RequestException as error:
-                logger.error(error)
-            except KeyError as error:
-                logger.error(error, exc_info=True)
-            except TypeError as error:
-                logger.error(error, exc_info=True)
-            except Exception as error:
-                logger.error(error, exc_info=True)
-            finally:
-                time.sleep(RETRY_PERIOD)
+    sent_messages = []
+    check_tokens()
+    bot = Bot(token=TELEGRAM_TOKEN)
+    timestamp = int(time.time())
+    update_date = datetime.today() + timedelta(days=1)
+    while True:
+        if datetime.today() == update_date:
+            sent_messages.clear()
+            update_date = datetime.today() + timedelta(days=1)
+
+        timestamp = logic_for_while_loop(timestamp, bot, sent_messages)
+
+        time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
     try:
         main()
-    except KeyboardInterrupt as err:
-        logger.error(f'Принудительное завершение программы {err}')
-    except SystemExit as err:
-        logger.critical(err, exc_info=True)
-    except Exception as err:
-        logger.critical(err, exc_info=True)
+    except KeyboardInterrupt:
+        logger.exception('Принудительное завершение программы.')
