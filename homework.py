@@ -31,38 +31,45 @@ HOMEWORK_VERDICTS: dict[str, str] = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
+DATE_FORMAT = '%Y-%m-%dT%XZ'
+
 STATUS_TEXT = (
     'Изменился статус проверки '
     'работы "{homework_name}". {verdict}'
 )
 SENT_SUCCESSFULLY = 'Сообщение: "{message}" - отправлено успешно.'
-MISSING_KEYS_API = 'В ответе API отсутствует ожидаемый ключ. {key_err}'
-DATE_FORMAT = '%Y-%m-%dT%XZ'
-ENDPOINT_ERROR_TEXT = 'Endpoint error! API status code: {status_code}'
+
 ENV_VARIABLE_ERROR_TEXT = 'Ошибка переменной окружения: {env_value}'
 TG_ID_ERROR_TEXT = 'Ошибка id чата телеграмм.'
-SEND_MESSAGE_ERROR_TEXT = ('Ошибка при отправке сообщения: '
-                           '{message}. Детали: {details}')
+SEND_MESSAGE_ERROR_TEXT = (
+    'Ошибка при отправке сообщения: {message}. Детали: {details}'
+)
 API_TYPE_ERROR_TEXT = 'Некорректный тип ответа API: {response}'
-NO_NEW_STATUS_EXC = 'Статус не изменился'
 VALUE_NOT_LIST_ERROR_TEXT = (
     'Значение ключа "{key_name}" '
     'не является списком. Тип ответа API: {response_type}'
 )
-MISSING_API_KEY = 'Отсутствует ключ "{key_name}" в ответе API.'
-REQUESTS_ERROR_TEXT = (
-    'Ошибка сети при отправке GET-запроса!'
+MISSING_API_KEY_ERROR_TEXT = (
+    'В ответе API отсутствует ожидаемый ключ: {key_name}'
+)
+FOR_GET_API_ANSWER_ERROR_TEXT = (
+    '{text}'
     '\nПараметры запроса:'
     '\nEndpoint={endpoint};'
     'Headers={headers};'
     'Params={params}.\n'
     '\nДелали ошибки: {error}'
 )
+NETWORK_ERROR_TEXT = 'Ошибка сети при отправке GET-запроса!'
+UNKNOWN_API_ERROR_TEXT = 'Неизвестная ошибка ответа API. Code: {status_code}'
+NOT_CORRECT_STATUS_ERROR_TEXT = 'Неожиданный статус домашней работы: {status}'
+NOT_NEW_STATUS_LOG_TEXT = 'В ответе отсутствует новый статус: {homework}'
+KEYBOARD_INTERRUPT_TEXT = 'Принудительное завершение программы.'
 
-NOT_CORRECT_STATUS = 'Неожиданный статус домашней работы: {status}'
-
-FORMATTER = ('%(asctime)s - %(funcName)s - '
-             '%(name)s - %(levelname)s - %(message)s')
+FORMATTER = (
+    '%(asctime)s - %(funcName)s - '
+    '%(name)s - %(levelname)s - %(message)s'
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +97,8 @@ def check_tokens() -> None:
                 )
     except ValueError as error:
         logger.critical(
-            f'Ошибка переменной окружения: {error}',
+            f'Невозможно запустить программу, '
+            f'проверьте переменные окружения: {error}',
             exc_info=True
         )
         raise
@@ -120,7 +128,7 @@ def check_response(response: dict) -> None:
 
     if 'homeworks' not in response:
         raise KeyError(
-            MISSING_API_KEY.format(key_name="homeworks")
+            MISSING_API_KEY_ERROR_TEXT.format(key_name="homeworks")
         )
 
     if not (
@@ -149,7 +157,8 @@ def get_api_answer(timestamp: int) -> dict:
         data_from_api = response.json()
     except Exception as error:
         raise ConnectionError(
-            REQUESTS_ERROR_TEXT.format(
+            FOR_GET_API_ANSWER_ERROR_TEXT.format(
+                text=NETWORK_ERROR_TEXT,
                 endpoint=ENDPOINT,
                 headers=HEADERS,
                 params=timestamp,
@@ -174,7 +183,13 @@ def get_api_answer(timestamp: int) -> dict:
 
         if response.status_code != 200:
             raise UnknownAPIAnswerError(
-                f'Неизвестная ошибка ответа API. Code: {response.status_code}'
+                FOR_GET_API_ANSWER_ERROR_TEXT.format(
+                    text=UNKNOWN_API_ERROR_TEXT,
+                    endpoint=ENDPOINT,
+                    headers=HEADERS,
+                    params=timestamp,
+                    error=''
+                )
             )
 
     check_response(data_from_api)
@@ -192,14 +207,14 @@ def parse_status(homework: dict) -> str:
     for key in homework_keys:
         if key not in homework:
             raise KeyError(
-                MISSING_API_KEY.format(
+                MISSING_API_KEY_ERROR_TEXT.format(
                     key_name=key
                 )
             )
 
     if homework.get('status') not in HOMEWORK_VERDICTS:
         raise StatusError(
-            NOT_CORRECT_STATUS.format(status=homework.get("status"))
+            NOT_CORRECT_STATUS_ERROR_TEXT.format(status=homework.get("status"))
         )
 
     return STATUS_TEXT.format(
@@ -214,7 +229,7 @@ def get_from_date(api_answer: dict) -> int:
     """Обновляет отсечку времени по присланным данным из API."""
     if 'current_date' not in api_answer:
         raise KeyError(
-            MISSING_API_KEY.format(
+            MISSING_API_KEY_ERROR_TEXT.format(
                 key_name='current_date'
             )
         )
@@ -237,7 +252,9 @@ def logic_for_while_loop(timestamp: int, bot: Bot, messages: list):
         if len(homework) > 0:
             send_message(bot, parse_status(homework[0]))
         else:
-            logger.debug(f'В ответе отсутствует новый статус: {homework}')
+            logger.debug(NOT_NEW_STATUS_LOG_TEXT.format(
+                homework=homework
+            ))
 
     except APIAnswerError as error:
         message = f'Ошибка ответа API: {error}'
@@ -270,6 +287,8 @@ def logic_for_while_loop(timestamp: int, bot: Bot, messages: list):
     else:
         return get_from_date(api_answer)
 
+    return 0
+
 
 def main() -> None:
     """Основная логика работы бота."""
@@ -292,4 +311,4 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        logger.exception('Принудительное завершение программы.')
+        logger.exception(KEYBOARD_INTERRUPT_TEXT)
