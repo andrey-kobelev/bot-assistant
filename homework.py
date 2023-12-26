@@ -13,7 +13,7 @@ from exception import (
     NotAuthenticatedError,
     APIAnswerError,
     StatusError,
-    UnknownAPIAnswerError
+    UnknownAPIAnswerError,
 )
 
 load_dotenv()
@@ -37,8 +37,9 @@ STATUS_TEXT = (
     'Изменился статус проверки '
     'работы "{homework_name}". {verdict}'
 )
-SENT_SUCCESSFULLY = 'Сообщение: "{message}" - отправлено успешно.'
+DEFAULT_FROM_DATE = 0
 
+# Тексты для ошибок.
 ENV_VARIABLE_ERROR_TEXT = 'Ошибка переменной окружения: {env_value}'
 TG_ID_ERROR_TEXT = 'Ошибка id чата телеграмм.'
 SEND_MESSAGE_ERROR_TEXT = (
@@ -58,13 +59,32 @@ FOR_GET_API_ANSWER_ERROR_TEXT = (
     '\nEndpoint={endpoint};'
     'Headers={headers};'
     'Params={params}.\n'
-    '\nДелали ошибки: {error}'
+    '\n{error}'
 )
 NETWORK_ERROR_TEXT = 'Ошибка сети при отправке GET-запроса!'
 UNKNOWN_API_ERROR_TEXT = 'Неизвестная ошибка ответа API. Code: {status_code}'
 NOT_CORRECT_STATUS_ERROR_TEXT = 'Неожиданный статус домашней работы: {status}'
-NOT_NEW_STATUS_LOG_TEXT = 'В ответе отсутствует новый статус: {homework}'
 KEYBOARD_INTERRUPT_TEXT = 'Принудительное завершение программы.'
+CURRENT_DATE_TYPE_ERROR_TEXT = (
+    'Неожиданный тип значения ключа '
+    '"current_date" ответа API: {date_type}'
+)
+
+# Тексты для логов
+CRITICAL_LOG_TEXT_FOR_ENV = (
+    'Невозможно запустить программу, '
+    'проверьте переменные окружения: {error}'
+)
+NOT_NEW_STATUS_LOG_TEXT = 'В ответе отсутствует новый статус: {homework}'
+SENT_SUCCESSFULLY_LOG_TEXT = 'Сообщение: "{message}" - отправлено успешно.'
+STANDARD_ERROR_LOG_TEXT = (
+    'Произошла ошибка во время работы бота.'
+    '\nПодробности:\n{error}'
+)
+LOG_TEXT_FOR_UNKNOWN_ERROR = (
+    'Неизвестная ошибка в работе бота.'
+    '\nПодробности:\n{error}'
+)
 
 FORMATTER = (
     '%(asctime)s - %(funcName)s - '
@@ -82,11 +102,11 @@ logging.basicConfig(
 
 def check_tokens() -> None:
     """Проверяет переменные окружения."""
-    tokens = [
+    tokens = (
         TELEGRAM_TOKEN,
         PRACTICUM_TOKEN,
         TELEGRAM_CHAT_ID
-    ]
+    )
     try:
         for token in tokens:
             if token == '' or token is None:
@@ -97,8 +117,9 @@ def check_tokens() -> None:
                 )
     except ValueError as error:
         logger.critical(
-            f'Невозможно запустить программу, '
-            f'проверьте переменные окружения: {error}',
+            CRITICAL_LOG_TEXT_FOR_ENV.format(
+                error=error
+            ),
             exc_info=True
         )
         raise
@@ -108,7 +129,7 @@ def send_message(bot: Bot, message: str) -> None:
     """Для отправки сообщения в телеграм."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug(SENT_SUCCESSFULLY.format(message=message))
+        logger.debug(SENT_SUCCESSFULLY_LOG_TEXT.format(message=message))
     except Exception as error:
         logger.error(
             SEND_MESSAGE_ERROR_TEXT.format(message=message, details=error),
@@ -227,17 +248,39 @@ def parse_status(homework: dict) -> str:
 
 def get_from_date(api_answer: dict) -> int:
     """Обновляет отсечку времени по присланным данным из API."""
-    if 'current_date' not in api_answer:
-        raise KeyError(
-            MISSING_API_KEY_ERROR_TEXT.format(
-                key_name='current_date'
+    try:
+        if 'current_date' not in api_answer:
+            raise KeyError(
+                MISSING_API_KEY_ERROR_TEXT.format(
+                    key_name='current_date'
+                )
             )
-        )
-    return int(api_answer.get('current_date'))
+        if not (
+            isinstance(api_answer.get('current_date'), int)
+            or issubclass(type(api_answer.get('current_date')), int)
+        ):
+            raise TypeError(
+                CURRENT_DATE_TYPE_ERROR_TEXT.format(
+                    date_type=type(api_answer.get('current_date'))
+                )
+            )
+    except KeyError:
+        logger.exception('Ошибка значения ключа current_date')
+    except ValueError:
+        logger.exception('Неожиданный тип значения ключа current_date')
+    else:
+        return int(api_answer.get('current_date'))
+    finally:
+        return DEFAULT_FROM_DATE
 
 
 def send_error_message(bot: Bot, message: str, messages: list):
-    """Отправляет в телеграм сообщение ошибки."""
+    """
+    Отправляет в телеграм сообщение ошибки.
+    Перед отправкой сверяется со списком уже отправленных сообщений:
+    если аналогичное сообщение уже было отправлено,
+    то отправка сообщения пропускается.
+    """
     if message not in messages:
         send_message(bot, message)
         messages.append(message)
@@ -255,39 +298,50 @@ def logic_for_while_loop(timestamp: int, bot: Bot, messages: list):
             logger.debug(NOT_NEW_STATUS_LOG_TEXT.format(
                 homework=homework
             ))
-
+        return get_from_date(api_answer)
     except APIAnswerError as error:
-        message = f'Ошибка ответа API: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except UnknownAPIAnswerError as error:
-        message = f' Неизвестная ошибка ответа API: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except NotAuthenticatedError as error:
-        message = f'Проверьте токен API: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except StatusError as error:
-        message = f'Неожиданный статус домашней работы: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except TypeError as error:
-        message = f'Неожиданный тип ответа API: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except KeyError as error:
-        message = f'Отсутствует ожидаемый ключ в ответе API: {error}'
+        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
         logger.error(message, exc_info=True)
         send_error_message(bot, message, messages)
     except Exception as error:
-        message = f'Неизвестная ошибка: {error}'
-        logger.error(message, exc_info=True)
+        message = LOG_TEXT_FOR_UNKNOWN_ERROR.format(error=error)
+        logger.exception(message)
         send_error_message(bot, message, messages)
-    else:
-        return get_from_date(api_answer)
 
-    return 0
+    return DEFAULT_FROM_DATE
+
+
+def clean_error_messages(clean_date: datetime, messages: list) -> datetime:
+    """
+    Удаляет отправленные сообщения об ошибках раз в сутки.
+    Возвращает следующую дату обнуления списка сообщений
+    если условие истинно. В противном случае возвращает ту же дату,
+    что была получена в качестве аргумента.
+    """
+    if datetime.today() >= clean_date:
+        messages.clear()
+        return datetime.today() + timedelta(days=1)
+    return clean_date
 
 
 def main() -> None:
@@ -296,14 +350,12 @@ def main() -> None:
     check_tokens()
     bot = Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    update_date = datetime.today() + timedelta(days=1)
+    clean_messages_date = datetime.today() + timedelta(days=1)
     while True:
-        if datetime.today() == update_date:
-            sent_messages.clear()
-            update_date = datetime.today() + timedelta(days=1)
-
+        clean_messages_date = clean_error_messages(
+            clean_messages_date, sent_messages
+        )
         timestamp = logic_for_while_loop(timestamp, bot, sent_messages)
-
         time.sleep(RETRY_PERIOD)
 
 
