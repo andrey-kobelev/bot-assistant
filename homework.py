@@ -2,19 +2,13 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
-from datetime import timedelta
+from logging.handlers import RotatingFileHandler
 
 from telegram import Bot
 from dotenv import load_dotenv
 import requests
 
-from exception import (
-    NotAuthenticatedError,
-    APIAnswerError,
-    StatusError,
-    UnknownAPIAnswerError,
-)
+from exceptions import APIAnswerError
 
 load_dotenv()
 
@@ -25,141 +19,126 @@ RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
-HOMEWORK_VERDICTS: dict[str, str] = {
+HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-DATE_FORMAT = '%Y-%m-%dT%XZ'
-
 STATUS_TEXT = (
     'Изменился статус проверки '
     'работы "{homework_name}". {verdict}'
 )
-DEFAULT_FROM_DATE = 0
 
 # Тексты для ошибок.
-ENV_VARIABLE_ERROR_TEXT = 'Ошибка переменной окружения: {env_value}'
-TG_ID_ERROR_TEXT = 'Ошибка id чата телеграмм.'
-SEND_MESSAGE_ERROR_TEXT = (
-    'Ошибка при отправке сообщения: {message}. Детали: {details}'
+ENV_VALUE_ERROR = (
+    'Некорректное значение переменной '
+    'окружения: {env_name}={value}'
 )
-API_TYPE_ERROR_TEXT = 'Некорректный тип ответа API: {response}'
-VALUE_NOT_LIST_ERROR_TEXT = (
+SEND_MESSAGE_ERROR = (
+    'Ошибка при отправке сообщения: {message}'
+)
+API_TYPE_ERROR = 'Некорректный тип ответа API: {response}'
+VALUE_NOT_LIST_ERROR = (
     'Значение ключа "{key_name}" '
     'не является списком. Тип ответа API: {response_type}'
 )
-MISSING_API_KEY_ERROR_TEXT = (
+MISSING_API_KEY_ERROR = (
     'В ответе API отсутствует ожидаемый ключ: {key_name}'
 )
-FOR_GET_API_ANSWER_ERROR_TEXT = (
-    '{text}'
-    '\nПараметры запроса:'
-    '\nEndpoint={endpoint};'
-    'Headers={headers};'
-    'Params={params}.\n'
-    '\n{error}'
-)
-NETWORK_ERROR_TEXT = 'Ошибка сети при отправке GET-запроса!'
-UNKNOWN_API_ERROR_TEXT = 'Неизвестная ошибка ответа API. Code: {status_code}'
-NOT_CORRECT_STATUS_ERROR_TEXT = 'Неожиданный статус домашней работы: {status}'
-KEYBOARD_INTERRUPT_TEXT = 'Принудительное завершение программы.'
-CURRENT_DATE_TYPE_ERROR_TEXT = (
-    'Неожиданный тип значения ключа '
-    '"current_date" ответа API: {date_type}'
-)
+GET_API_ANSWER_ERROR = ("""
+Параметры запроса:
+Endpoint={url};
+Headers={headers};
+Params={params}.
+""")
+NETWORK_ERROR = 'Ошибка сети при отправке GET-запроса!'
+UNKNOWN_API_ERROR = 'Неизвестная ошибка ответа API. Code: {status_code}'
+NOT_CORRECT_STATUS_ERROR = 'Неожиданный статус домашней работы: {status}'
 
 # Тексты для логов
-CRITICAL_LOG_TEXT_FOR_ENV = (
+CRITICAL_LOG_FOR_ENV = (
     'Невозможно запустить программу, '
-    'проверьте переменные окружения: {error}'
+    'проверьте переменную окружения: {env_name}'
 )
-NOT_NEW_STATUS_LOG_TEXT = 'В ответе отсутствует новый статус: {homework}'
-SENT_SUCCESSFULLY_LOG_TEXT = 'Сообщение: "{message}" - отправлено успешно.'
-STANDARD_ERROR_LOG_TEXT = (
-    'Произошла ошибка во время работы бота.'
-    '\nПодробности:\n{error}'
-)
-LOG_TEXT_FOR_UNKNOWN_ERROR = (
-    'Неизвестная ошибка в работе бота.'
-    '\nПодробности:\n{error}'
-)
-
-FORMATTER = (
-    '%(asctime)s - %(funcName)s - '
-    '%(name)s - %(levelname)s - %(message)s'
-)
+NOT_NEW_STATUS_LOG = 'В ответе отсутствует новый статус: {homework}'
+SENT_SUCCESSFULLY_LOG = 'Сообщение: "{message}" - отправлено успешно.'
+STANDARD_ERROR_LOG = ("""
+Произошла ошибка во время работы бота.
+Подробности:
+{error}
+""")
 
 logger = logging.getLogger(__name__)
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format=FORMATTER,
-    stream=sys.stdout
+handler = RotatingFileHandler(
+    'homework.log', maxBytes=50000000, backupCount=5
 )
+logger.addHandler(handler)
 
 
 def check_tokens() -> None:
     """Проверяет переменные окружения."""
-    tokens = (
-        TELEGRAM_TOKEN,
-        PRACTICUM_TOKEN,
-        TELEGRAM_CHAT_ID
+    env_variables_names = (
+        'TELEGRAM_TOKEN',
+        'PRACTICUM_TOKEN',
+        'TELEGRAM_CHAT_ID'
     )
-    try:
-        for token in tokens:
-            if token == '' or token is None:
+    for env_name in env_variables_names:
+        try:
+            value = globals()[env_name]
+            if value is None or value == '':
                 raise ValueError(
-                    ENV_VARIABLE_ERROR_TEXT.format(
-                        env_value=token
+                    ENV_VALUE_ERROR.format(
+                        env_name=env_name,
+                        value=value
                     )
                 )
-    except ValueError as error:
-        logger.critical(
-            CRITICAL_LOG_TEXT_FOR_ENV.format(
-                error=error
-            ),
-            exc_info=True
-        )
-        raise
+        except KeyError:
+            logger.critical(
+                CRITICAL_LOG_FOR_ENV.format(env_name=env_name),
+                exc_info=True
+            )
+            raise
+        except ValueError:
+            logger.critical(
+                CRITICAL_LOG_FOR_ENV.format(env_name=env_name),
+                exc_info=True
+            )
+            raise
 
 
 def send_message(bot: Bot, message: str) -> None:
     """Для отправки сообщения в телеграм."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug(SENT_SUCCESSFULLY_LOG_TEXT.format(message=message))
+        logger.debug(SENT_SUCCESSFULLY_LOG.format(message=message))
     except Exception as error:
         logger.error(
-            SEND_MESSAGE_ERROR_TEXT.format(message=message, details=error),
+            f'{SEND_MESSAGE_ERROR.format(message=message)}'
+            f'{error}',
             exc_info=True
         )
 
 
 def check_response(response: dict) -> None:
     """Проверяет ответ API на соответствие с документацией."""
-    if not (
-        isinstance(response, dict)
-        or issubclass(type(response), dict)
-    ):
+    if not isinstance(response, dict):
         raise TypeError(
-            API_TYPE_ERROR_TEXT.format(response=type(response))
+            API_TYPE_ERROR.format(response=type(response))
         )
 
     if 'homeworks' not in response:
         raise KeyError(
-            MISSING_API_KEY_ERROR_TEXT.format(key_name="homeworks")
+            MISSING_API_KEY_ERROR.format(key_name="homeworks")
         )
 
-    if not (
-        isinstance(response.get('homeworks'), list)
-        or issubclass(type(response.get('homeworks')), list)
-    ):
+    homeworks = response.get('homeworks')
+
+    if not isinstance(homeworks, list):
         raise TypeError(
-            VALUE_NOT_LIST_ERROR_TEXT.format(
+            VALUE_NOT_LIST_ERROR.format(
                 key_name='homeworks',
-                response_type=type(response.get('homeworks'))
+                response_type=type(homeworks)
             )
         )
 
@@ -169,52 +148,42 @@ def get_api_answer(timestamp: int) -> dict:
     Отправляет запрос к API.
     Возвращает ответ API.
     """
+    parameters = dict(
+        url=ENDPOINT,
+        headers=HEADERS,
+        params={'from_date': timestamp}
+    )
+
     try:
         response = requests.get(
-            ENDPOINT,
-            headers=HEADERS,
-            params={'from_date': timestamp}
+            **parameters
         )
-        data_from_api = response.json()
-    except Exception as error:
+    except requests.exceptions.RequestException as error:
         raise ConnectionError(
-            FOR_GET_API_ANSWER_ERROR_TEXT.format(
-                text=NETWORK_ERROR_TEXT,
-                endpoint=ENDPOINT,
-                headers=HEADERS,
-                params=timestamp,
-                error=error
-            )
+            f'{NETWORK_ERROR} '
+            f'{GET_API_ANSWER_ERROR.format(**parameters)} '
+            f'{error}'
         )
-    else:
-        if 'error' in data_from_api:
+
+    data_from_api = response.json()
+    api_keys = ('code', 'error')
+    for key in api_keys:
+        if key in data_from_api:
+            error_message = ''
+            for error_data in tuple(data_from_api.items()):
+                error_message += f'{error_data[0].title()}: {error_data[1]} '
             raise APIAnswerError(
-                f'Error: {data_from_api.get("error").get("error")}\n'
-                f'Code: {data_from_api.get("cose")}'
+                f'{error_message}'
+                f'{GET_API_ANSWER_ERROR.format(**parameters)}'
             )
 
-        if (
-            'error' not in data_from_api
-            and 'code' in data_from_api
-        ):
-            raise NotAuthenticatedError(
-                f'Code: {data_from_api.get("code")}\n'
-                f'Message: {data_from_api.get("message")}'
-            )
+    status = response.status_code
 
-        if response.status_code != 200:
-            raise UnknownAPIAnswerError(
-                FOR_GET_API_ANSWER_ERROR_TEXT.format(
-                    text=UNKNOWN_API_ERROR_TEXT,
-                    endpoint=ENDPOINT,
-                    headers=HEADERS,
-                    params=timestamp,
-                    error=''
-                )
-            )
-
-    check_response(data_from_api)
-
+    if status != 200:
+        raise APIAnswerError(
+            f'{UNKNOWN_API_ERROR} Status code: {status}.'
+            f'{GET_API_ANSWER_ERROR.format(**parameters)}'
+        )
     return data_from_api
 
 
@@ -228,139 +197,59 @@ def parse_status(homework: dict) -> str:
     for key in homework_keys:
         if key not in homework:
             raise KeyError(
-                MISSING_API_KEY_ERROR_TEXT.format(
+                MISSING_API_KEY_ERROR.format(
                     key_name=key
                 )
             )
-
-    if homework.get('status') not in HOMEWORK_VERDICTS:
-        raise StatusError(
-            NOT_CORRECT_STATUS_ERROR_TEXT.format(status=homework.get("status"))
+    homework_status = homework.get('status')
+    if homework_status not in HOMEWORK_VERDICTS:
+        raise ValueError(
+            NOT_CORRECT_STATUS_ERROR.format(status=homework_status)
         )
 
     return STATUS_TEXT.format(
         homework_name=homework['homework_name'],
         verdict=HOMEWORK_VERDICTS.get(
-            homework['status']
+            homework_status
         )
     )
 
 
-def get_from_date(api_answer: dict) -> int:
-    """Обновляет отсечку времени по присланным данным из API."""
-    try:
-        if 'current_date' not in api_answer:
-            raise KeyError(
-                MISSING_API_KEY_ERROR_TEXT.format(
-                    key_name='current_date'
-                )
-            )
-        if not (
-            isinstance(api_answer.get('current_date'), int)
-            or issubclass(type(api_answer.get('current_date')), int)
-        ):
-            raise TypeError(
-                CURRENT_DATE_TYPE_ERROR_TEXT.format(
-                    date_type=type(api_answer.get('current_date'))
-                )
-            )
-    except KeyError:
-        logger.exception('Ошибка значения ключа current_date')
-    except ValueError:
-        logger.exception('Неожиданный тип значения ключа current_date')
-    else:
-        return int(api_answer.get('current_date'))
-    finally:
-        return DEFAULT_FROM_DATE
-
-
-def send_error_message(bot: Bot, message: str, messages: list):
-    """
-    Отправляет в телеграм сообщение ошибки.
-    Перед отправкой сверяется со списком уже отправленных сообщений:
-    если аналогичное сообщение уже было отправлено,
-    то отправка сообщения пропускается.
-    """
-    if message not in messages:
-        send_message(bot, message)
-        messages.append(message)
-
-
-def logic_for_while_loop(timestamp: int, bot: Bot, messages: list):
-    """Логика для цикла while функции main()."""
-    try:
-        api_answer = get_api_answer(timestamp)
-        homework = api_answer.get('homeworks')
-
-        if len(homework) > 0:
-            send_message(bot, parse_status(homework[0]))
-        else:
-            logger.debug(NOT_NEW_STATUS_LOG_TEXT.format(
-                homework=homework
-            ))
-        return get_from_date(api_answer)
-    except APIAnswerError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except UnknownAPIAnswerError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except NotAuthenticatedError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except StatusError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except TypeError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except KeyError as error:
-        message = STANDARD_ERROR_LOG_TEXT.format(error=error)
-        logger.error(message, exc_info=True)
-        send_error_message(bot, message, messages)
-    except Exception as error:
-        message = LOG_TEXT_FOR_UNKNOWN_ERROR.format(error=error)
-        logger.exception(message)
-        send_error_message(bot, message, messages)
-
-    return DEFAULT_FROM_DATE
-
-
-def clean_error_messages(clean_date: datetime, messages: list) -> datetime:
-    """
-    Удаляет отправленные сообщения об ошибках раз в сутки.
-    Возвращает следующую дату обнуления списка сообщений
-    если условие истинно. В противном случае возвращает ту же дату,
-    что была получена в качестве аргумента.
-    """
-    if datetime.today() >= clean_date:
-        messages.clear()
-        return datetime.today() + timedelta(days=1)
-    return clean_date
-
-
 def main() -> None:
     """Основная логика работы бота."""
-    sent_messages = []
+    sent_message = ''
     check_tokens()
     bot = Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    clean_messages_date = datetime.today() + timedelta(days=1)
     while True:
-        clean_messages_date = clean_error_messages(
-            clean_messages_date, sent_messages
-        )
-        timestamp = logic_for_while_loop(timestamp, bot, sent_messages)
+        try:
+            api_answer = get_api_answer(timestamp)
+            check_response(api_answer)
+            homework = api_answer.get('homeworks')
+
+            if len(homework) > 0:
+                send_message(bot, parse_status(homework[0]))
+                timestamp = api_answer.get('current_date')
+            else:
+                logger.debug(NOT_NEW_STATUS_LOG.format(
+                    homework=homework
+                ))
+        except Exception as error:
+            message = STANDARD_ERROR_LOG.format(error=error)
+            logger.exception(message)
+            if message != sent_message:
+                send_message(bot, message)
+                sent_message = message
+
         time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.exception(KEYBOARD_INTERRUPT_TEXT)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(funcName)s - '
+               '%(name)s - %(levelname)s - %(message)s',
+        stream=sys.stdout
+    )
+
+    main()
