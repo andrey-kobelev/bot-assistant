@@ -24,7 +24,6 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-FILENAME = __file__ + 'homework.log'
 
 ENV_VARIABLES_NAMES = (
     'TELEGRAM_TOKEN',
@@ -49,7 +48,7 @@ ENV_VARIABLES_ERROR = (
     'Ошибка в переменных окружения: {errors}.'
 )
 SEND_MESSAGE_ERROR = (
-    'Ошибка при отправке сообщения: {message}'
+    'Ошибка при отправке сообщения: {message}: {error}'
 )
 API_TYPE_ERROR = 'Некорректный тип ответа API: {response}'
 VALUE_NOT_LIST_ERROR = (
@@ -64,23 +63,23 @@ API_GET_PARAMETERS_FOR_ERRORS = (
     'Headers={headers}; Params={params}.'
 )
 NETWORK_ERROR = (
-    'Ошибка сети при отправке GET-запроса: {error}'
-    + API_GET_PARAMETERS_FOR_ERRORS
+    f'Ошибка сети при отправке GET-запроса: {{error}}'
+    f'{API_GET_PARAMETERS_FOR_ERRORS}'
 )
 API_ANSWER_ERROR = (
-    'Ошибка в ответе API: {key}: {value}'
-    + API_GET_PARAMETERS_FOR_ERRORS
+    f'Ошибка в ответе API: {{key}}: {{value}}'
+    f'{API_GET_PARAMETERS_FOR_ERRORS}'
 )
 UNKNOWN_API_ERROR = (
-    'Неизвестная ошибка ответа API. Status code: {status_code}'
-    + API_GET_PARAMETERS_FOR_ERRORS
+    f'Неизвестная ошибка ответа API. Status code: {{status_code}}'
+    f'{API_GET_PARAMETERS_FOR_ERRORS}'
 )
 NOT_CORRECT_STATUS_ERROR = 'Неожиданный статус домашней работы: {status}'
 
 # Тексты для логов
 CRITICAL_LOG_FOR_ENV = (
     'Невозможно запустить программу, '
-    'проверьте переменные окружения.'
+    'проверьте переменные окружения: {errors}'
 )
 NOT_NEW_STATUS_LOG = 'В ответе отсутствует новый статус: {homework}'
 SENT_SUCCESSFULLY_LOG = 'Сообщение: "{message}" - отправлено успешно.'
@@ -94,36 +93,23 @@ logger = logging.getLogger(__name__)
 
 def check_tokens() -> None:
     """Проверяет переменные окружения."""
-    bad_env_variables = []
-    for env_name in ENV_VARIABLES_NAMES:
-        if env_name in globals():
-            value = globals().get(env_name)
-            if value is None or value == '':
-                bad_env_variables.append(
-                    ENV_VALUE_ERROR.format(
-                        env_name=env_name,
-                        value=value
-                    )
-                )
-        else:
-            bad_env_variables.append(
-                ENV_VARIABLE_NOT_FOUND_ERROR.format(
-                    env_name=env_name
-                )
-            )
-    try:
-        if len(bad_env_variables) > 0:
-            raise ValueError(
-                ENV_VARIABLES_ERROR.format(
-                    errors='; '.join(bad_env_variables)
-                )
-            )
-    except ValueError:
-        logger.critical(
-            CRITICAL_LOG_FOR_ENV,
-            exc_info=True
-        )
-        raise
+    env_errors = (
+        [
+            ENV_VARIABLE_NOT_FOUND_ERROR.format(env_name=env)
+            for env in ENV_VARIABLES_NAMES
+            if env not in globals()
+
+        ]
+        + [
+            ENV_VALUE_ERROR.format(env_name=env, value=globals()[env])
+            for env in ENV_VARIABLES_NAMES
+            if env in globals()
+            if globals()[env] is None or globals()[env] == ''
+        ]
+    )
+    if env_errors:
+        logger.critical(CRITICAL_LOG_FOR_ENV.format(errors=env_errors))
+        raise ValueError(ENV_VARIABLES_ERROR.format(errors=env_errors))
 
 
 def send_message(bot: Bot, message: str) -> bool:
@@ -131,13 +117,12 @@ def send_message(bot: Bot, message: str) -> bool:
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(SENT_SUCCESSFULLY_LOG.format(message=message))
-    except Exception:
+        return True
+    except Exception as error:
         logger.exception(
-            SEND_MESSAGE_ERROR.format(message=message)
+            SEND_MESSAGE_ERROR.format(message=message, error=error)
         )
         return False
-    else:
-        return True
 
 
 def check_response(response: dict) -> None:
@@ -146,14 +131,11 @@ def check_response(response: dict) -> None:
         raise TypeError(
             API_TYPE_ERROR.format(response=type(response))
         )
-
     if 'homeworks' not in response:
         raise KeyError(
             MISSING_API_KEY_ERROR.format(key_name="homeworks")
         )
-
-    homeworks = response.get('homeworks')
-
+    homeworks = response['homeworks']
     if not isinstance(homeworks, list):
         raise TypeError(
             VALUE_NOT_LIST_ERROR.format(
@@ -173,7 +155,6 @@ def get_api_answer(timestamp: int) -> dict:
         headers=HEADERS,
         params={'from_date': timestamp}
     )
-
     try:
         response = requests.get(
             **parameters
@@ -182,9 +163,7 @@ def get_api_answer(timestamp: int) -> dict:
         raise ConnectionError(
             NETWORK_ERROR.format(error=error, **parameters)
         )
-
     data_from_api = response.json()
-
     for key in ('code', 'error'):
         if key in data_from_api:
             raise APIAnswerError(
@@ -194,9 +173,7 @@ def get_api_answer(timestamp: int) -> dict:
                     **parameters
                 )
             )
-
     status = response.status_code
-
     if status != 200:
         raise APIAnswerError(
             UNKNOWN_API_ERROR.format(
@@ -216,17 +193,14 @@ def parse_status(homework: dict) -> str:
                     key_name=key
                 )
             )
-    homework_status = homework.get('status')
-    if homework_status not in HOMEWORK_VERDICTS:
+    status = homework['status']
+    if status not in HOMEWORK_VERDICTS:
         raise ValueError(
-            NOT_CORRECT_STATUS_ERROR.format(status=homework_status)
+            NOT_CORRECT_STATUS_ERROR.format(status=status)
         )
-
     return STATUS.format(
         homework_name=homework['homework_name'],
-        verdict=HOMEWORK_VERDICTS.get(
-            homework_status
-        )
+        verdict=HOMEWORK_VERDICTS[status]
     )
 
 
@@ -241,8 +215,7 @@ def main() -> None:
             api_answer = get_api_answer(timestamp)
             check_response(api_answer)
             homework = api_answer.get('homeworks')
-
-            if len(homework) > 0:
+            if homework:
                 if send_message(bot, parse_status(homework[0])):
                     timestamp = api_answer.get('current_date', timestamp)
             else:
@@ -252,10 +225,8 @@ def main() -> None:
         except Exception as error:
             message = STANDARD_ERROR_LOG.format(error=error)
             logger.exception(message)
-            if message != sent_message:
-                if send_message(bot, message):
-                    sent_message = message
-
+            if message != sent_message and send_message(bot, message):
+                sent_message = message
         time.sleep(RETRY_PERIOD)
 
 
@@ -265,8 +236,8 @@ if __name__ == '__main__':
         format='%(asctime)s - %(funcName)s - '
                '%(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(FILENAME, mode='w'),
+            logging.FileHandler(f'{__file__}.log', mode='w'),
             logging.StreamHandler(stream=sys.stdout)
         ]
     )
-    main()
+    check_tokens()
