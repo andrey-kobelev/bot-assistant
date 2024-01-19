@@ -240,4 +240,4 @@ if __name__ == '__main__':
             logging.StreamHandler(stream=sys.stdout)
         ]
     )
-    check_tokens()
+    main()
