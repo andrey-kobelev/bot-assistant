@@ -37,15 +37,8 @@ STATUS = (
 )
 
 # Тексты для ошибок.
-ENV_VALUE_ERROR = (
-    'Некорректное значение переменной '
-    'окружения {env_name}={value}'
-)
-ENV_VARIABLE_NOT_FOUND_ERROR = (
-    'Переменная окружения {env_name} - не найдена'
-)
 ENV_VARIABLES_ERROR = (
-    'Ошибка в переменных окружения: {errors}.'
+    'Ошибка переменных окружения: {errors}.'
 )
 SEND_MESSAGE_ERROR = (
     'Ошибка при отправке сообщения: {message}: {error}'
@@ -93,20 +86,11 @@ logger = logging.getLogger(__name__)
 
 def check_tokens() -> None:
     """Проверяет переменные окружения."""
-    env_errors = (
-        [
-            ENV_VARIABLE_NOT_FOUND_ERROR.format(env_name=env)
-            for env in ENV_VARIABLES_NAMES
-            if env not in globals()
-
-        ]
-        + [
-            ENV_VALUE_ERROR.format(env_name=env, value=globals()[env])
-            for env in ENV_VARIABLES_NAMES
-            if env in globals()
-            if globals()[env] is None or globals()[env] == ''
-        ]
-    )
+    env_errors = [
+        env
+        for env in ENV_VARIABLES_NAMES
+        if globals().get(env) is None or globals().get(env) == ''
+    ]
     if env_errors:
         logger.critical(CRITICAL_LOG_FOR_ENV.format(errors=env_errors))
         raise ValueError(ENV_VARIABLES_ERROR.format(errors=env_errors))
@@ -240,4 +224,4 @@ if __name__ == '__main__':
             logging.StreamHandler(stream=sys.stdout)
         ]
     )
-    main()
+    check_tokens()
